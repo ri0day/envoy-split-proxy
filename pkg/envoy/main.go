@@ -7,24 +7,24 @@ import (
 	"regexp"
 	"time"
 
-	api "github.com/envoyproxy/go-control-plane/envoy/api/v2"
-	core "github.com/envoyproxy/go-control-plane/envoy/api/v2/core"
-	listener "github.com/envoyproxy/go-control-plane/envoy/api/v2/listener"
-	route "github.com/envoyproxy/go-control-plane/envoy/api/v2/route"
-	dynamic_forward_cluster "github.com/envoyproxy/go-control-plane/envoy/config/cluster/dynamic_forward_proxy/v2alpha"
-	v2alpha "github.com/envoyproxy/go-control-plane/envoy/config/common/dynamic_forward_proxy/v2alpha"
-	http_proxy "github.com/envoyproxy/go-control-plane/envoy/config/filter/http/dynamic_forward_proxy/v2alpha"
-	http "github.com/envoyproxy/go-control-plane/envoy/config/filter/network/http_connection_manager/v2"
-	tcp_proxy "github.com/envoyproxy/go-control-plane/envoy/config/filter/network/tcp_proxy/v2"
+	cluster "github.com/envoyproxy/go-control-plane/envoy/config/cluster/v3"
+	core "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
+	listener "github.com/envoyproxy/go-control-plane/envoy/config/listener/v3"
+	route "github.com/envoyproxy/go-control-plane/envoy/config/route/v3"
+	dynamic_forward_cluster "github.com/envoyproxy/go-control-plane/envoy/extensions/clusters/dynamic_forward_proxy/v3"
+	v3 "github.com/envoyproxy/go-control-plane/envoy/extensions/common/dynamic_forward_proxy/v3"
+	http "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/network/http_connection_manager/v3"
+	tcp_proxy "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/network/tcp_proxy/v3"
+	clusterservice "github.com/envoyproxy/go-control-plane/envoy/service/cluster/v3"
+	listenerservice "github.com/envoyproxy/go-control-plane/envoy/service/listener/v3"
 	"github.com/envoyproxy/go-control-plane/pkg/cache/types"
-	"github.com/envoyproxy/go-control-plane/pkg/cache/v2"
-	xds "github.com/envoyproxy/go-control-plane/pkg/server/v2"
+	"github.com/envoyproxy/go-control-plane/pkg/cache/v3"
+	xds "github.com/envoyproxy/go-control-plane/pkg/server/v3"
 	"github.com/envoyproxy/go-control-plane/pkg/wellknown"
 	"github.com/gogo/protobuf/proto"
 	"github.com/golang/protobuf/ptypes"
 	"github.com/golang/protobuf/ptypes/any"
 	"github.com/golang/protobuf/ptypes/duration"
-	wrappers "github.com/golang/protobuf/ptypes/wrappers"
 	"github.com/networkop/envoy-split-proxy/pkg/config"
 	"github.com/sirupsen/logrus"
 	"google.golang.org/grpc"
@@ -65,8 +65,8 @@ func NewServer(grpcURL string, nodeID string, httpsPort, httpPort int) (*Envoy, 
 		return nil, err
 	}
 
-	api.RegisterClusterDiscoveryServiceServer(grpcServer, server)
-	api.RegisterListenerDiscoveryServiceServer(grpcServer, server)
+	clusterservice.RegisterClusterDiscoveryServiceServer(grpcServer, server)
+	listenerservice.RegisterListenerDiscoveryServiceServer(grpcServer, server)
 
 	go func() {
 		if err := grpcServer.Serve(lis); err != nil {
@@ -126,42 +126,41 @@ func buildCluster(ip string) []types.Resource {
 
 	return []types.Resource{defaultTLSCluster, bypassTLSCluster, defaultHTTPCluster, bypassHTTPCluster}
 }
-
-func newEnvoyTLSCluster(name string) *api.Cluster {
+func newEnvoyTLSCluster(name string) *cluster.Cluster {
 	logrus.Debugf("Creating Envoy TLS cluster %s", name)
-	return &api.Cluster{
+	return &cluster.Cluster{
 		Name:                 name,
 		ConnectTimeout:       ptypes.DurationProto(5 * time.Second),
-		ClusterDiscoveryType: &api.Cluster_Type{Type: api.Cluster_ORIGINAL_DST},
-		DnsLookupFamily:      api.Cluster_V4_ONLY,
-		LbPolicy:             api.Cluster_CLUSTER_PROVIDED,
+		ClusterDiscoveryType: &cluster.Cluster_Type{Type: cluster.Cluster_ORIGINAL_DST},
+		DnsLookupFamily:      cluster.Cluster_V4_ONLY,
+		LbPolicy:             cluster.Cluster_CLUSTER_PROVIDED,
 	}
 }
 
-func newEnvoyHTTPCluster(name string) *api.Cluster {
+func newEnvoyHTTPCluster(name string) *cluster.Cluster {
 	logrus.Debugf("Creating Envoy HTTP cluster %s", name)
-	return &api.Cluster{
+	return &cluster.Cluster{
 		Name:           name,
 		ConnectTimeout: ptypes.DurationProto(5 * time.Second),
-		ClusterDiscoveryType: &api.Cluster_ClusterType{
-			ClusterType: &api.Cluster_CustomClusterType{
+		ClusterDiscoveryType: &cluster.Cluster_ClusterType{
+			ClusterType: &cluster.Cluster_CustomClusterType{
 				Name: "envoy.clusters.dynamic_forward_proxy",
 				TypedConfig: makeAny(&dynamic_forward_cluster.ClusterConfig{
-					DnsCacheConfig: &v2alpha.DnsCacheConfig{
+					DnsCacheConfig: &v3.DnsCacheConfig{
 						Name:            "dns",
-						DnsLookupFamily: api.Cluster_V4_ONLY,
+						DnsLookupFamily: cluster.Cluster_V4_ONLY,
 					},
 				}),
 			},
 		},
-		DnsLookupFamily: api.Cluster_V4_ONLY,
-		LbPolicy:        api.Cluster_CLUSTER_PROVIDED,
+		DnsLookupFamily: cluster.Cluster_V4_ONLY,
+		LbPolicy:        cluster.Cluster_CLUSTER_PROVIDED,
 	}
 }
 
 func buildListener(urls []string, httpsPort, httpPort int) []types.Resource {
 	return []types.Resource{
-		&api.Listener{
+		&listener.Listener{
 			Name: defaultHTTPListenerName,
 			Address: &core.Address{
 				Address: &core.Address_SocketAddress{
@@ -189,10 +188,10 @@ func buildListener(urls []string, httpsPort, httpPort int) []types.Resource {
 										{
 											Name: "http-filter",
 											ConfigType: &http.HttpFilter_TypedConfig{
-												TypedConfig: makeAny(&http_proxy.FilterConfig{
-													DnsCacheConfig: &v2alpha.DnsCacheConfig{
+												TypedConfig: makeAny(&dynamic_forward_cluster.ClusterConfig{
+													DnsCacheConfig: &v3.DnsCacheConfig{
 														Name:            "dns",
-														DnsLookupFamily: api.Cluster_V4_ONLY,
+														DnsLookupFamily: cluster.Cluster_V4_ONLY,
 													},
 												}),
 											},
@@ -203,7 +202,7 @@ func buildListener(urls []string, httpsPort, httpPort int) []types.Resource {
 										},
 									},
 									RouteSpecifier: &http.HttpConnectionManager_RouteConfig{
-										RouteConfig: &api.RouteConfiguration{
+										RouteConfig: &route.RouteConfiguration{
 											Name: "default",
 											VirtualHosts: []*route.VirtualHost{
 												{
@@ -256,7 +255,7 @@ func buildListener(urls []string, httpsPort, httpPort int) []types.Resource {
 				},
 			},
 		},
-		&api.Listener{
+		&listener.Listener{
 			Name: defaultHTTPSListenerName,
 			Address: &core.Address{
 				Address: &core.Address_SocketAddress{
@@ -267,9 +266,6 @@ func buildListener(urls []string, httpsPort, httpPort int) []types.Resource {
 						},
 					},
 				},
-			},
-			UseOriginalDst: &wrappers.BoolValue{
-				Value: true,
 			},
 			FilterChains: []*listener.FilterChain{
 				{
