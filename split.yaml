@@ -1,8 +1,10 @@
-interface: eth0
+interface: ens5
 urls:
 ## Testing
 - ifconfig.me
 ## Netflix
+- "*.mason.corp"
+- "*.baidu.com"
 - "*.netflix.com"
 - "*.nflxvideo.net"
 - "*.nflxext.com"
@@ -10,6 +12,7 @@ urls:
 - "81.130.98.*"
 - nflximg.com
 - netflix.net
+- www.douban.com
 ## BBC iPlayer
 - "*.bbc.co.uk"
 - "*.bbc.com"
@@ -26,3 +29,4 @@ urls:
 - "*.aiv-delivery.net"
 - "*.amazonvideo.com"
 - "atv-ext-eu.amazon.com"
+- www.whitehouse.gov

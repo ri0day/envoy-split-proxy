@@ -12,6 +12,7 @@ import (
 	listener "github.com/envoyproxy/go-control-plane/envoy/config/listener/v3"
 	route "github.com/envoyproxy/go-control-plane/envoy/config/route/v3"
 	dynamic_forward_cluster "github.com/envoyproxy/go-control-plane/envoy/extensions/clusters/dynamic_forward_proxy/v3"
+	dynamic_forward_filter "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/http/dynamic_forward_proxy/v3"
 	v3 "github.com/envoyproxy/go-control-plane/envoy/extensions/common/dynamic_forward_proxy/v3"
 	http "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/network/http_connection_manager/v3"
 	tcp_proxy "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/network/tcp_proxy/v3"
@@ -20,6 +21,7 @@ import (
 	"github.com/envoyproxy/go-control-plane/pkg/cache/types"
 	"github.com/envoyproxy/go-control-plane/pkg/cache/v3"
 	xds "github.com/envoyproxy/go-control-plane/pkg/server/v3"
+	"github.com/envoyproxy/go-control-plane/pkg/resource/v3"
 	"github.com/envoyproxy/go-control-plane/pkg/wellknown"
 	"github.com/gogo/protobuf/proto"
 	"github.com/golang/protobuf/ptypes"
@@ -89,9 +91,15 @@ func (e *Envoy) Configure(in chan *config.Data) {
 		logrus.Infof("Received new config: %+v", d)
 
 		cluster := buildCluster(d.IP.String())
+		route := makeRoute(d.URLs)
 		listener := buildListener(d.URLs, e.httpsPort, e.httpPort)
-		snapshot := cache.NewSnapshot(time.Now().String(), nil, cluster, nil, listener, nil, nil)
-		err := e.cache.SetSnapshot(e.nodeID, snapshot)
+		//snapshot := cache.NewSnapshot(time.Now().String(), nil, cluster, nil, listener, nil, nil)
+		snapshot, _ := cache.NewSnapshot(time.Now().String(),map[resource.Type][]types.Resource{
+			resource.RouteType:    {route},
+			resource.ClusterType:  cluster,
+			resource.ListenerType: listener,
+		})
+		err := e.cache.SetSnapshot(context.Background(),e.nodeID, snapshot)
 		if err != nil {
 			logrus.Infof("Failed to update envoy config: %s", err)
 		} else {
@@ -157,7 +165,6 @@ func newEnvoyHTTPCluster(name string) *cluster.Cluster {
 		LbPolicy:        cluster.Cluster_CLUSTER_PROVIDED,
 	}
 }
-
 func buildListener(urls []string, httpsPort, httpPort int) []types.Resource {
 	return []types.Resource{
 		&listener.Listener{
@@ -179,6 +186,7 @@ func buildListener(urls []string, httpsPort, httpPort int) []types.Resource {
 							Name: wellknown.HTTPConnectionManager,
 							ConfigType: &listener.Filter_TypedConfig{
 								TypedConfig: makeAny(&http.HttpConnectionManager{
+									//CodecType:  http.HttpConnectionManager_AUTO,
 									//NormalizePath:     &wrappers.BoolValue{Value: true},
 									//MergeSlashes:      true,
 									//GenerateRequestId: &wrappers.BoolValue{Value: false},
@@ -188,7 +196,7 @@ func buildListener(urls []string, httpsPort, httpPort int) []types.Resource {
 										{
 											Name: "http-filter",
 											ConfigType: &http.HttpFilter_TypedConfig{
-												TypedConfig: makeAny(&dynamic_forward_cluster.ClusterConfig{
+												TypedConfig: makeAny(&dynamic_forward_filter.FilterConfig{
 													DnsCacheConfig: &v3.DnsCacheConfig{
 														Name:            "dns",
 														DnsLookupFamily: cluster.Cluster_V4_ONLY,
@@ -201,51 +209,10 @@ func buildListener(urls []string, httpsPort, httpPort int) []types.Resource {
 											ConfigType: nil,
 										},
 									},
-									RouteSpecifier: &http.HttpConnectionManager_RouteConfig{
-										RouteConfig: &route.RouteConfiguration{
-											Name: "default",
-											VirtualHosts: []*route.VirtualHost{
-												{
-													Name:    "default",
-													Domains: []string{"*"},
-													Routes: []*route.Route{
-														{
-															Match: &route.RouteMatch{
-																PathSpecifier: &route.RouteMatch_Prefix{
-																	Prefix: "/",
-																},
-															},
-															Action: &route.Route_Route{
-																Route: &route.RouteAction{
-																	ClusterSpecifier: &route.RouteAction_Cluster{
-																		Cluster: defaultHTTPCluster,
-																	},
-																},
-															},
-														},
-													},
-												},
-												{
-													Name:    "default-bypass",
-													Domains: urls,
-													Routes: []*route.Route{
-														{
-															Match: &route.RouteMatch{
-																PathSpecifier: &route.RouteMatch_Prefix{
-																	Prefix: "/",
-																},
-															},
-															Action: &route.Route_Route{
-																Route: &route.RouteAction{
-																	ClusterSpecifier: &route.RouteAction_Cluster{
-																		Cluster: bypassHTTPCluster,
-																	},
-																},
-															},
-														},
-													},
-												},
-											},
+									RouteSpecifier: &http.HttpConnectionManager_Rds{
+										Rds: &http.Rds{
+											ConfigSource:    makeConfigSource(),
+											RouteConfigName: "default",
 										},
 									},
 								}),
@@ -295,6 +262,53 @@ func buildListener(urls []string, httpsPort, httpPort int) []types.Resource {
 		},
 	}
 }
+func makeRoute(urls []string) *route.RouteConfiguration {
+	return &route.RouteConfiguration{
+		Name: "default",
+		VirtualHosts: []*route.VirtualHost{
+			{
+				Name:    "default",
+				Domains: []string{"*"},
+				Routes: []*route.Route{
+					{
+						Match: &route.RouteMatch{
+							PathSpecifier: &route.RouteMatch_Prefix{
+								Prefix: "/",
+							},
+						},
+						Action: &route.Route_Route{
+							Route: &route.RouteAction{
+								ClusterSpecifier: &route.RouteAction_Cluster{
+									Cluster: defaultHTTPCluster,
+								},
+							},
+						},
+					},
+				},
+			},
+			{
+				Name:    "default-bypass",
+				Domains: urls,
+				Routes: []*route.Route{
+					{
+						Match: &route.RouteMatch{
+							PathSpecifier: &route.RouteMatch_Prefix{
+								Prefix: "/",
+							},
+						},
+						Action: &route.Route_Route{
+							Route: &route.RouteAction{
+								ClusterSpecifier: &route.RouteAction_Cluster{
+									Cluster: bypassHTTPCluster,
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+}
 
 func newClusterTypedConfig(name string) *any.Any {
 	logrus.Debugf("Building cluster config for %s", name)
@@ -330,4 +344,22 @@ func excludePartialWildCards(urls []string) []string {
 
 	}
 	return output
+}
+
+func makeConfigSource() *core.ConfigSource {
+	source := &core.ConfigSource{}
+	source.ResourceApiVersion = resource.DefaultAPIVersion
+	source.ConfigSourceSpecifier = &core.ConfigSource_ApiConfigSource{
+		ApiConfigSource: &core.ApiConfigSource{
+			TransportApiVersion:       resource.DefaultAPIVersion,
+			ApiType:                   core.ApiConfigSource_GRPC,
+			SetNodeOnFirstMessageOnly: true,
+			GrpcServices: []*core.GrpcService{{
+				TargetSpecifier: &core.GrpcService_EnvoyGrpc_{
+					EnvoyGrpc: &core.GrpcService_EnvoyGrpc{ClusterName: "xds_cluster"},
+				},
+			}},
+		},
+	}
+	return source
 }
